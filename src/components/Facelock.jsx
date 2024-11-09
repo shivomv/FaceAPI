@@ -1,22 +1,23 @@
 import React, { useState, useEffect, useRef } from 'react';
 import * as faceapi from 'face-api.js';
-import { Container, Row, Col, Form, Button, Card, Alert, Spinner } from 'react-bootstrap';
+import { Container, Row, Col, Card, Alert, Spinner } from 'react-bootstrap';
 import referenceImage from '../assets/img/reference.jpg';
 
 const Facelock = () => {
   const [modelsLoaded, setModelsLoaded] = useState(false);
   const [referenceDescriptor, setReferenceDescriptor] = useState(null);
-  const [verificationImage, setVerificationImage] = useState(null);
   const [isVerified, setIsVerified] = useState(null);
   const [isProcessing, setIsProcessing] = useState(false);
   const [matchPercentage, setMatchPercentage] = useState(null);
+  const videoRef = useRef();
+  const canvasRef = useRef();
 
   useEffect(() => {
     const loadModels = async () => {
       try {
         const MODEL_URL = `${window.location.origin}/models`;
         await Promise.all([
-          faceapi.nets.ssdMobilenetv1.loadFromUri(MODEL_URL),
+          faceapi.nets.tinyFaceDetector.loadFromUri(MODEL_URL),
           faceapi.nets.faceRecognitionNet.loadFromUri(MODEL_URL),
           faceapi.nets.faceLandmark68Net.loadFromUri(MODEL_URL)
         ]);
@@ -24,14 +25,8 @@ const Facelock = () => {
         
         // Process reference image on load
         const img = await faceapi.fetchImage(referenceImage);
-        const canvas = document.createElement('canvas');
-        canvas.willReadFrequently = true;
-        canvas.width = img.width;
-        canvas.height = img.height;
-        const ctx = canvas.getContext('2d');
-        ctx.drawImage(img, 0, 0);
-
-        const detections = await faceapi.detectAllFaces(canvas)
+        const detections = await faceapi
+          .detectAllFaces(img, new faceapi.TinyFaceDetectorOptions())
           .withFaceLandmarks()
           .withFaceDescriptors();
         
@@ -45,48 +40,67 @@ const Facelock = () => {
     loadModels();
   }, []);
 
-  const processImage = async (imageFile) => {
-    const img = await faceapi.bufferToImage(imageFile);
-    const canvas = document.createElement('canvas');
-    canvas.willReadFrequently = true;
-    canvas.width = img.width;
-    canvas.height = img.height;
-    const ctx = canvas.getContext('2d');
-    ctx.drawImage(img, 0, 0);
-
-    const detections = await faceapi.detectAllFaces(canvas)
-      .withFaceLandmarks()
-      .withFaceDescriptors();
-
-    return detections[0]?.descriptor;
-  };
-
-  const handleImageUpload = async (e) => {
-    const file = e.target.files[0];
-    if (!file) return;
-
-    setIsProcessing(true);
-    setVerificationImage(file);
-    
-    try {
-      const descriptor = await processImage(file);
-      
-      if (descriptor && referenceDescriptor) {
-        const distance = faceapi.euclideanDistance(referenceDescriptor, descriptor);
-        const percentage = Math.max(0, Math.round((1 - distance) * 100));
-        setMatchPercentage(percentage);
-        setIsVerified(distance < 0.5);
-      } else {
-        setMatchPercentage(0);
-        setIsVerified(false);
+  useEffect(() => {
+    const startVideo = async () => {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+        if (videoRef.current) {
+          videoRef.current.srcObject = stream;
+        }
+      } catch (error) {
+        console.error('Error accessing webcam:', error);
       }
-    } catch (err) {
-      console.error("Error processing image:", err);
-      alert("Error processing image. Please try another image.");
-    } finally {
-      setIsProcessing(false);
+    };
+
+    if (modelsLoaded) {
+      startVideo();
     }
-  };
+  }, [modelsLoaded]);
+
+  useEffect(() => {
+    if (!modelsLoaded || !videoRef.current || !referenceDescriptor) return;
+
+    const verifyFace = async () => {
+      const video = videoRef.current;
+      const canvas = canvasRef.current;
+
+      if (!video || !canvas) return;
+
+      const displaySize = { width: video.width, height: video.height };
+      faceapi.matchDimensions(canvas, displaySize);
+
+      setInterval(async () => {
+        setIsProcessing(true);
+        const detections = await faceapi
+          .detectAllFaces(video, new faceapi.TinyFaceDetectorOptions())
+          .withFaceLandmarks()
+          .withFaceDescriptors();
+
+        const resizedDetections = faceapi.resizeResults(detections, displaySize);
+        canvas.getContext('2d').clearRect(0, 0, canvas.width, canvas.height);
+        faceapi.draw.drawDetections(canvas, resizedDetections);
+
+        if (detections[0]?.descriptor) {
+          const distance = faceapi.euclideanDistance(referenceDescriptor, detections[0].descriptor);
+          const percentage = Math.max(0, Math.round((1 - distance) * 100));
+          setMatchPercentage(percentage);
+          setIsVerified(distance < 0.5);
+        } else {
+          setMatchPercentage(0);
+          setIsVerified(false);
+        }
+        setIsProcessing(false);
+      }, 100);
+    };
+
+    videoRef.current.addEventListener('play', verifyFace);
+
+    return () => {
+      if (videoRef.current) {
+        videoRef.current.removeEventListener('play', verifyFace);
+      }
+    };
+  }, [modelsLoaded, referenceDescriptor]);
 
   return (
     <Container className="py-5">
@@ -116,32 +130,35 @@ const Facelock = () => {
                 </Col>
 
                 <Col md={6}>
-                  <Form.Group className="mb-4">
-                    <h5>Verification Image:</h5>
-                    <Form.Control
-                      type="file"
-                      accept="image/*"
-                      onChange={handleImageUpload}
-                      disabled={!modelsLoaded || !referenceDescriptor || isProcessing}
-                      className="mb-3"
+                  <h5>Live Verification:</h5>
+                  <div className="position-relative d-inline-block">
+                    <video
+                      ref={videoRef}
+                      autoPlay
+                      muted
+                      width="400"
+                      height="300"
                     />
-                    {verificationImage && (
-                      <img
-                        src={URL.createObjectURL(verificationImage)}
-                        alt="Verification"
-                        className="mt-3 img-fluid rounded"
-                        style={{ maxHeight: '300px', width: '100%', objectFit: 'cover' }}
-                        onLoad={() => URL.revokeObjectURL(URL.createObjectURL(verificationImage))}
-                      />
-                    )}
-                  </Form.Group>
+                    <canvas
+                      ref={canvasRef}
+                      width="400"
+                      height="300"
+                      style={{
+                        position: 'absolute',
+                        top: 0,
+                        left: 0,
+                        width: '100%',
+                        height: '100%'
+                      }}
+                    />
+                  </div>
                 </Col>
               </Row>
 
               {isProcessing && (
                 <div className="text-center my-4">
                   <Spinner animation="border" role="status" />
-                  <p className="mt-2">Processing image...</p>
+                  <p className="mt-2">Processing video...</p>
                 </div>
               )}
 

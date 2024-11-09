@@ -71,9 +71,9 @@ const FaceLandmarks = () => {
   }, [isModelLoaded]);
 
   return (
-    <div className="face-landmarks-container">
+    <div className="text-center">
       <h2>Face Landmarks Detection</h2>
-      <div className="video-container">
+      <div className="position-relative d-inline-block">
         <video
           ref={videoRef}
           autoPlay
@@ -85,7 +85,13 @@ const FaceLandmarks = () => {
           ref={canvasRef}
           width="720"
           height="560"
-          style={{ position: 'absolute', top: 0, left: 0 }}
+          style={{
+            position: 'absolute',
+            top: 0,
+            left: 0,
+            width: '100%',
+            height: '100%'
+          }}
         />
       </div>
       {!isModelLoaded && <p>Loading face detection models...</p>}
